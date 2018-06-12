@@ -48,14 +48,14 @@ def configure_tensorflow():
 # Data related functions #
 ##########################
 
-def save_data_tfrecord(tfrecord_path, dataset_url, google_drive_file_id=None):
+def save_data_tfrecord(tfrecord_path, dataset_url, google_drive_file_id=None, embedding_image_size=224, image_size=128):
     if not os.path.exists('data/'):
         os.makedirs('data/')
     if google_drive_file_id:
         _download_file_from_google_drive(google_drive_file_id, tfrecord_path)
     else:
         image_path = _download_and_save_zip(dataset_url)
-        _generate_records(image_path, tfrecord_path, 100)
+        _generate_records(image_path, tfrecord_path, embedding_image_size, image_size, 100)
 
 def _download_file_from_google_drive(id, destination):
     def get_confirm_token(response):
@@ -107,7 +107,7 @@ def _download_and_save_zip(url):
         os.remove(zip_path) # Remove zip file
     return path
 
-def _generate_records(images_path, tf_record_name, batch_size=100):
+def _generate_records(images_path, tf_record_name, embedding_image_size, image_size, batch_size=100):
     '''
     Creates a TF Record containing the pre-processed image consisting of
     1)  L channel input
@@ -128,7 +128,7 @@ def _generate_records(images_path, tf_record_name, batch_size=100):
     options = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.ZLIB)
     writer = tf.python_io.TFRecordWriter(tf_record_name, options)
 
-    size = max(EMBEDDING_IMAGE_SIZE, IMAGE_SIZE)  # keep larger size until stored in TF Record
+    size = max(embedding_image_size, image_size)  # keep larger size until stored in TF Record
 
     X_buffer = []
     for i, fn in enumerate(files):
@@ -142,7 +142,7 @@ def _generate_records(images_path, tf_record_name, batch_size=100):
 
         if len(X_buffer) >= batch_size:
             X_buffer = np.array(X_buffer)
-            _serialize_batch(X_buffer, writer, batch_size)  # serialize the image into the TF Record
+            _serialize_batch(X_buffer, writer, image_size, batch_size)  # serialize the image into the TF Record
 
             del X_buffer  # delete buffered images from memory
             X_buffer = []  # reset to new list
@@ -151,7 +151,7 @@ def _generate_records(images_path, tf_record_name, batch_size=100):
 
     if len(X_buffer) != 0:
         X_buffer = np.array(X_buffer)
-        _serialize_batch(X_buffer, writer)  # serialize the remaining images in buffer
+        _serialize_batch(X_buffer, writer, image_size)  # serialize the remaining images in buffer
 
         del X_buffer  # delete buffer
 
@@ -160,7 +160,7 @@ def _generate_records(images_path, tf_record_name, batch_size=100):
 
     writer.close()
 
-def _serialize_batch(X, writer, batch_size=100):
+def _serialize_batch(X, writer, image_size, batch_size=100):
     '''
     Processes a batch of images, and then serializes into the TFRecord
     Args:
@@ -172,8 +172,8 @@ def _serialize_batch(X, writer, batch_size=100):
 
     for j, (img_l, embed, y) in enumerate(zip(X_batch, features, Y_batch)):
         # resize the images to their smaller size to reduce space wastage in the record
-        img_l = resize(img_l, (IMAGE_SIZE, IMAGE_SIZE, 1), mode='constant')
-        y = resize(y, (IMAGE_SIZE, IMAGE_SIZE, 2), mode='constant')
+        img_l = resize(img_l, (image_size, image_size, 1), mode='constant')
+        y = resize(y, (image_size, image_size, 2), mode='constant')
 
         example_dict = {
             'image_l': _float32_feature_list(img_l.flatten()),
@@ -184,7 +184,7 @@ def _serialize_batch(X, writer, batch_size=100):
         example = tf.train.Example(features=example_feature)
         writer.write(example.SerializeToString())
 
-def _process_batch(X, batchsize=100):
+def _process_batch(X, embedding_image_size, batchsize=100):
     '''
     Process a batch of images for training
     Args:
@@ -196,23 +196,23 @@ def _process_batch(X, batchsize=100):
     X_batch = X_batch.reshape(X_batch.shape + (1,))  # reshape into (batch, IMAGE_SIZE, IMAGE_SIZE, 1)
     X_batch = 2 * X_batch / 100 - 1.  # normalize the batch
     Y_batch = lab_batch[:, :, :, 1:] / 127  # extract AB from LAB
-    features = _extract_features(grayscaled_rgb, batchsize)  # extract features from the grayscale image
+    features = _extract_features(grayscaled_rgb, embedding_image_size, batchsize)  # extract features from the grayscale image
 
     return ([X_batch, features], Y_batch)
 
 feature_extraction_model = None
 mobilenet_activations = None
 
-def _extract_features(grayscaled_rgb, batchsize=100):
+def _extract_features(grayscaled_rgb, embedding_image_size, batchsize=100):
     # Load up MobileNet only when necessary, not during training
     if feature_extraction_model is None:
-        _load_mobilenet()
+        _load_mobilenet(embedding_image_size)
 
     grayscaled_rgb_resized = []
 
     for i in grayscaled_rgb:
         # Resize to size of MobileNet Input
-        i = resize(i, (EMBEDDING_IMAGE_SIZE, EMBEDDING_IMAGE_SIZE, 3), mode='constant')
+        i = resize(i, (embedding_image_size, embedding_image_size, 3), mode='constant')
         grayscaled_rgb_resized.append(i)
 
     grayscaled_rgb_resized = np.array(grayscaled_rgb_resized) * 255.  # scale to 0-255 range for MobileNet preprocess_input
@@ -224,11 +224,11 @@ def _extract_features(grayscaled_rgb, batchsize=100):
 
     return features
 
-def _load_mobilenet():
+def _load_mobilenet(embedding_image_size):
     global feature_extraction_model, mobilenet_activations
 
     # Feature extraction module
-    feature_extraction_model = MobileNet(input_shape=(EMBEDDING_IMAGE_SIZE, EMBEDDING_IMAGE_SIZE, 3),
+    feature_extraction_model = MobileNet(input_shape=(embedding_image_size, embedding_image_size, 3),
                                          alpha=1.0,
                                          depth_multiplier=1,
                                          include_top=True,
@@ -250,14 +250,14 @@ def _get_pre_activations(grayscale_image, batchsize=100):
 def _float32_feature_list(floats):
     return tf.train.Feature(float_list=tf.train.FloatList(value=floats))
 
-def _construct_dataset(record_path, batch_size, sess):
+def _construct_dataset(record_path, batch_size, image_size, sess):
     def parse_record(serialized_example):
         # parse a single record
         features = tf.parse_single_example(
             serialized_example,
             features={
-                'image_l': tf.FixedLenFeature([IMAGE_SIZE, IMAGE_SIZE, 1], tf.float32),
-                'image_ab': tf.FixedLenFeature([IMAGE_SIZE, IMAGE_SIZE, 2], tf.float32),
+                'image_l': tf.FixedLenFeature([image_size, image_size, 1], tf.float32),
+                'image_ab': tf.FixedLenFeature([image_size, image_size, 2], tf.float32),
                 'image_features': tf.FixedLenFeature([1000, ], tf.float32)
             })
 
@@ -281,18 +281,18 @@ def _construct_dataset(record_path, batch_size, sess):
 # Training related functions #
 ##############################
 
-def train_generator(batch_size):
+def train_generator(train_tf_path, image_size, batch_size):
     '''
     Generator which wraps a tf.data.Dataset object to read in the
     TFRecord more conveniently.
     '''
-    if not os.path.exists(TRAIN_RECORDS_PATH):
+    if not os.path.exists(train_tf_path):
         print("\n\n", '*' * 50, "\n")
         print("Please create the TFRecord of this dataset by running `data_utils.py` script")
         exit(0)
 
     with tf.Session() as train_gen_session:
-        dataset, next_batch = _construct_dataset(TRAIN_RECORDS_PATH, batch_size, train_gen_session)
+        dataset, next_batch = _construct_dataset(train_tf_path, batch_size, image_size, train_gen_session)
 
         while True:
             try:
@@ -307,18 +307,18 @@ def train_generator(batch_size):
                 l, ab, features = train_gen_session.run(next_batch)
                 yield ([l, features], ab)
 
-def val_batch_generator(batch_size):
+def val_batch_generator(val_tf_path, batch_size, image_size):
     '''
     Generator which wraps a tf.data.Dataset object to read in the
     TFRecord more conveniently.
     '''
-    if not os.path.exists(VAL_RECORDS_PATH):
+    if not os.path.exists(val_tf_path):
         print("\n\n", '*' * 50, "\n")
         print("Please create the TFRecord of this dataset by running `data_utils.py` script with validation data")
         exit(0)
 
     with tf.Session() as val_generator_session:
-        dataset, next_batch = _construct_dataset(VAL_RECORDS_PATH, batch_size, val_generator_session)
+        dataset, next_batch = _construct_dataset(val_tf_path, batch_size, image_size, val_generator_session)
 
         while True:
             try:
@@ -392,7 +392,7 @@ def load_test_data(dataset_url, image_size, top_index):
     print("Images loaded. Shape = ", X.shape)
     return X
 
-def prepare_input_image_batch(X, batchsize=100):
+def prepare_input_image_batch(X, embedding_image_size, batchsize=100):
     '''
     This is a helper function which does the same as _preprocess_batch,
     but it is meant to be used with images during testing, not training.
@@ -401,7 +401,7 @@ def prepare_input_image_batch(X, batchsize=100):
     '''
     X_processed = X / 255.  # normalize grayscale image
     X_grayscale = gray2rgb(rgb2gray(X_processed))
-    X_features = _extract_features(X_grayscale, batchsize)
+    X_features = _extract_features(X_grayscale, embedding_image_size, batchsize)
     X_lab = rgb2lab(X_grayscale)[:, :, :, 0]
     X_lab = X_lab.reshape(X_lab.shape + (1,))
     X_lab = 2 * X_lab / 100 - 1.
@@ -409,7 +409,7 @@ def prepare_input_image_batch(X, batchsize=100):
     return X_lab, X_features
 
 
-def postprocess_output(X_lab, y, image_size=None):
+def postprocess_output(X_lab, y, image_size=256):
     '''
     This is a helper function for test time to convert and save the
     the processed image into the 'results' directory.
@@ -422,8 +422,6 @@ def postprocess_output(X_lab, y, image_size=None):
         os.makedirs('results/')
     y *= 127.  # scale the predictions to [-127, 127]
     X_lab = (X_lab + 1) * 50.  # scale the L channel to [0, 100]
-
-    image_size = IMAGE_SIZE if image_size is None else image_size  # set a default image size if needed
 
     for i in range(len(y)):
         cur = np.zeros((image_size, image_size, 3))
