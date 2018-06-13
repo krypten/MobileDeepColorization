@@ -3,7 +3,9 @@ import glob
 
 import keras
 from keras import backend as K
+from keras.applications.mobilenet import MobileNet, preprocess_input
 from keras.callbacks import TensorBoard
+from keras.models import Model
 from keras.preprocessing.image import img_to_array, load_img
 
 import numpy as np
@@ -281,7 +283,7 @@ def _construct_dataset(record_path, batch_size, image_size, sess):
 # Training related functions #
 ##############################
 
-def train_generator(train_tf_path, image_size, batch_size):
+def train_generator(train_tf_path, batch_size, image_size):
     '''
     Generator which wraps a tf.data.Dataset object to read in the
     TFRecord more conveniently.
