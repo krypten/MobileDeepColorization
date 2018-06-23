@@ -299,7 +299,6 @@ def train_generator(train_tf_path, batch_size, image_size):
         while True:
             try:
                 l, ab, features = train_gen_session.run(next_batch)  # retrieve a batch of records
-                print('\n')
                 yield ([l, features], ab)
             except:
                 # if it crashes due to some reason
@@ -308,8 +307,8 @@ def train_generator(train_tf_path, batch_size, image_size):
                 next_batch = iterator.get_next()
 
                 l, ab, features = train_gen_session.run(next_batch)
-                print('\n')
                 yield ([l, features], ab)
+    print('\n')
 
 def val_batch_generator(val_tf_path, batch_size, image_size):
     '''
@@ -336,6 +335,7 @@ def val_batch_generator(val_tf_path, batch_size, image_size):
 
                 l, ab, features = val_generator_session.run(next_batch)
                 yield ([l, features], ab)
+    print('\n')
 
 '''
 Below is a modification to the TensorBoard callback to perform 
